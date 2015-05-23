@@ -1,11 +1,16 @@
-{-# LANGUAGE PatternGuards #-}
-
 module Haschat (haschat, defaultPort, chatServerPort) where
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.Chan (Chan, newChan)
+import Control.Concurrent.MVar (MVar)
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
 import System.Environment (lookupEnv)
-import System.IO (stderr, hSetBuffering, hPutStrLn, BufferMode(..), Handle)
+import System.IO (stderr, hSetBuffering, hPutStrLn, BufferMode(..))
+
+data HaschatServer = HaschatServer { serverSocket :: Socket
+                                   , nextUserId   :: Int
+                                   , messageQueue :: Chan String
+                                   }
 
 defaultPort :: Int
 defaultPort = 22311
@@ -16,7 +21,13 @@ haschat = withSocketsDo $ do
     serverPort <- chatServerPort
     listenSock <- listenOn $ PortNumber (fromIntegral serverPort)
     hPutStrLn stderr $ "Listening on port " ++ (show serverPort)
-    serverLoop listenSock 1
+    messageChan <- newChan
+    _ <- forkIO $ processChat messageChan
+    let server = HaschatServer { serverSocket = listenSock
+                               , nextUserId   = 1
+                               , messageQueue = messageChan
+                               }
+    serverLoop server
 
 chatServerPort :: IO Int
 chatServerPort = do
@@ -37,16 +48,19 @@ chatServerPort = do
                 ]
             return defaultPort
 
-serverLoop :: Socket -> Int -> IO ()
-serverLoop listenSock userId = do
-    (handle, hostname, clientPort) <- accept listenSock
+serverLoop :: HaschatServer -> IO ()
+serverLoop server = do
+    (handle, hostname, clientPort) <- accept $ serverSocket server
     hPutStrLn stderr $ unwords
         [ "Accepted connection from"
-        , hostname ++ ":" ++ (show clientPort)
+        , hostname ++ ":" ++ show clientPort
         ]
     hSetBuffering handle NoBuffering
-    _ <- forkIO $ processChat handle userId
-    serverLoop listenSock (userId + 1)
+    _ <- forkIO $ chatter server
+    serverLoop server {nextUserId = nextUserId server + 1}
 
-processChat :: Handle -> Int -> IO ()
-processChat handle userId = return ()
+processChat :: Chan String -> IO ()
+processChat messageChan = return ()
+
+chatter :: HaschatServer -> IO ()
+chatter server = return ()
