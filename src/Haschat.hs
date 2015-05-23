@@ -1,15 +1,26 @@
 module Haschat (haschat, defaultPort, chatServerPort) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.Chan (Chan, newChan)
-import Control.Concurrent.MVar (MVar)
+import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
+import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
 import System.Environment (lookupEnv)
-import System.IO (stderr, hSetBuffering, hPutStrLn, BufferMode(..))
+import System.IO (stderr, hSetBuffering, hPutStrLn, BufferMode(..), Handle)
+
+data User = User { userId       :: Int
+                 , userHandle   :: Handle
+                 , userMessageQueue :: Chan Message
+                 }
+
+data Message = Message { messageFrom :: User
+                       , messageBody :: String
+                       , doBroadcast :: Bool
+                       }
 
 data HaschatServer = HaschatServer { serverSocket :: Socket
                                    , nextUserId   :: Int
-                                   , messageQueue :: Chan String
+                                   , messageQueue :: Chan Message
+                                   , serverUsers  :: MVar [User]
                                    }
 
 defaultPort :: Int
@@ -22,11 +33,13 @@ haschat = withSocketsDo $ do
     listenSock <- listenOn $ PortNumber (fromIntegral serverPort)
     hPutStrLn stderr $ "Listening on port " ++ (show serverPort)
     messageChan <- newChan
-    _ <- forkIO $ processChat messageChan
+    userList <- newMVar []
     let server = HaschatServer { serverSocket = listenSock
                                , nextUserId   = 1
                                , messageQueue = messageChan
+                               , serverUsers        = userList
                                }
+    _ <- forkIO $ processChat server
     serverLoop server
 
 chatServerPort :: IO Int
@@ -56,11 +69,35 @@ serverLoop server = do
         , hostname ++ ":" ++ show clientPort
         ]
     hSetBuffering handle NoBuffering
-    _ <- forkIO $ chatter server
+    let user = User { userId           = nextUserId server
+                    , userHandle       = handle
+                    , userMessageQueue = messageQueue server
+                    }
+    addUser (serverUsers server) user
+    let userJoinedMessage = Message { messageFrom = user
+                                    , messageBody = show (userId user) ++ " has joined"
+                                    , doBroadcast = True
+                                    }
+    writeChan (messageQueue server) userJoinedMessage
+    _ <- forkIO $ chatter user
     serverLoop server {nextUserId = nextUserId server + 1}
 
-processChat :: Chan String -> IO ()
-processChat messageChan = return ()
+addUser :: MVar [User] -> User -> IO ()
+addUser users u =  putMVar users =<< (:) u <$> takeMVar users
 
-chatter :: HaschatServer -> IO ()
-chatter server = return ()
+processChat :: HaschatServer -> IO ()
+processChat server = do
+    nextMessage <- readChan $ messageQueue server
+    userList <- takeMVar $ serverUsers server
+    if doBroadcast nextMessage then broadcastMessage userList nextMessage
+                               else sendMessage userList nextMessage
+    putMVar (serverUsers server) userList
+    processChat server where
+        broadcastMessage userList message =
+            mapM_ (flip hPutStrLn (messageBody message) . userHandle) userList
+        sendMessage userList message =
+            broadcastMessage (filter (notSender message) userList) message
+        notSender message user = not $ userId user == userId (messageFrom message)
+
+chatter :: User -> IO ()
+chatter user = return ()
