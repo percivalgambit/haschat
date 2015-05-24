@@ -2,26 +2,31 @@ module Haschat (haschat, defaultPort, chatServerPort) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
-import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
 import System.Environment (lookupEnv)
 import System.IO (stderr, hSetBuffering, hPutStrLn, BufferMode(..), Handle)
 
-data User = User { userId       :: Int
-                 , userHandle   :: Handle
-                 , userMessageQueue :: Chan Message
-                 }
+data HaschatAction = SendMessage HaschatMessage
+                   | AddUser HaschatUser
+                   | RemoveUser HaschatUser
 
-data Message = Message { messageFrom :: User
-                       , messageBody :: String
-                       , doBroadcast :: Bool
-                       }
+data HaschatServer = HaschatServer
+    { serverSocket      :: Socket
+    , serverNextUserId  :: Int
+    , serverUsers       :: [HaschatUser]
+    , serverHaschatChan :: Chan HaschatAction
+    }
 
-data HaschatServer = HaschatServer { serverSocket :: Socket
-                                   , nextUserId   :: Int
-                                   , messageQueue :: Chan Message
-                                   , serverUsers  :: MVar [User]
-                                   }
+data HaschatUser = HaschatUser
+    { userId          :: Int
+    , userHandle      :: Handle
+    , userHaschatChan :: Chan HaschatAction
+    }
+
+data HaschatMessage = HaschatMessage
+    { messageBody   :: String
+    , messageSender :: Maybe HaschatUser
+    }
 
 defaultPort :: Int
 defaultPort = 22311
@@ -32,14 +37,13 @@ haschat = withSocketsDo $ do
     serverPort <- chatServerPort
     listenSock <- listenOn $ PortNumber (fromIntegral serverPort)
     hPutStrLn stderr $ "Listening on port " ++ (show serverPort)
-    messageChan <- newChan
-    userList <- newMVar []
-    let server = HaschatServer { serverSocket = listenSock
-                               , nextUserId   = 1
-                               , messageQueue = messageChan
-                               , serverUsers        = userList
+    haschatChan <- newChan
+    let server = HaschatServer { serverSocket      = listenSock
+                               , serverNextUserId  = 1
+                               , serverUsers       = []
+                               , serverHaschatChan = haschatChan
                                }
-    _ <- forkIO $ processChat server
+    _ <- forkIO $ processActions server
     serverLoop server
 
 chatServerPort :: IO Int
@@ -69,35 +73,31 @@ serverLoop server = do
         , hostname ++ ":" ++ show clientPort
         ]
     hSetBuffering handle NoBuffering
-    let user = User { userId           = nextUserId server
-                    , userHandle       = handle
-                    , userMessageQueue = messageQueue server
-                    }
-    addUser (serverUsers server) user
-    let userJoinedMessage = Message { messageFrom = user
-                                    , messageBody = show (userId user) ++ " has joined"
-                                    , doBroadcast = True
-                                    }
-    writeChan (messageQueue server) userJoinedMessage
+    let user = HaschatUser { userId    = serverNextUserId server
+                           , userHandle      = handle
+                           , userHaschatChan = serverHaschatChan server
+                           }
+    writeChan (serverHaschatChan server) $ AddUser user
     _ <- forkIO $ chatter user
-    serverLoop server {nextUserId = nextUserId server + 1}
+    serverLoop server { serverNextUserId = serverNextUserId server + 1 }
 
-addUser :: MVar [User] -> User -> IO ()
-addUser users u =  putMVar users =<< (:) u <$> takeMVar users
+processActions :: HaschatServer -> IO ()
+processActions server = do
+    action <- readChan $ serverHaschatChan server
+    case action of
+        SendMessage message -> processMessage server message
+        AddUser user        -> processAddUser server user
+        RemoveUser user     -> processRemoveUser server user
+    processActions server
 
-processChat :: HaschatServer -> IO ()
-processChat server = do
-    nextMessage <- readChan $ messageQueue server
-    userList <- takeMVar $ serverUsers server
-    if doBroadcast nextMessage then broadcastMessage userList nextMessage
-                               else sendMessage userList nextMessage
-    putMVar (serverUsers server) userList
-    processChat server where
-        broadcastMessage userList message =
-            mapM_ (flip hPutStrLn (messageBody message) . userHandle) userList
-        sendMessage userList message =
-            broadcastMessage (filter (notSender message) userList) message
-        notSender message user = not $ userId user == userId (messageFrom message)
+processMessage :: HaschatServer -> HaschatMessage -> IO ()
+processMessage server message = return ()
 
-chatter :: User -> IO ()
+processAddUser :: HaschatServer -> HaschatUser -> IO ()
+processAddUser server user = return ()
+
+processRemoveUser :: HaschatServer -> HaschatUser -> IO ()
+processRemoveUser server user = return ()
+
+chatter :: HaschatUser -> IO ()
 chatter user = return ()
