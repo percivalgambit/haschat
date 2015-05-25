@@ -1,4 +1,6 @@
-module Haschat (haschat, defaultPort, chatServerPort) where
+module Haschat (haschat, defaultPort, chatServerPort, serverLoop, sendMessage,
+                processActions, chatter, HaschatAction(..), HaschatServer(..),
+                HaschatUser(..), HaschatMessage(..)) where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
