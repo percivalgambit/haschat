@@ -19,7 +19,8 @@ library
   hs-source-dirs:      src
   exposed-modules:     Haschat
   build-depends:       base >=4.7 && <4.9,
-                       network ==2.6.1.0
+                       network ==2.6.1.0,
+                       stm == 2.4.4
   default-language:    Haskell2010
   ghc-options:         -Wall
 
@@ -39,6 +40,7 @@ test-suite test-haschat
                        haschat,
                        hspec ==2.1.7,
                        network ==2.6.1.0,
-                       QuickCheck ==2.8.1
+                       QuickCheck ==2.8.1,
+                       stm ==2.4.4
   default-language:    Haskell2010
   ghc-options:         -Wall

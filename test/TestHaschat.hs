@@ -5,25 +5,27 @@ import Test.QuickCheck
 
 import Haschat
 
-import Control.Concurrent.Chan (newChan)
+import Control.Concurrent.STM.TQueue (newTQueueIO)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar)
+import Control.Monad.STM (atomically)
 import Control.Exception (bracket)
 import Network (withSocketsDo, listenOn, sClose, PortID(..))
 import System.Environment (setEnv, unsetEnv)
 
-setupMockServer :: IO HaschatServer
+setupMockServer :: IO (TVar HaschatServer)
 setupMockServer = do
     socket <- listenOn $ PortNumber 0
-    chan <- newChan
-    return HaschatServer { _serverSocket      = socket
-                         , _serverNextUserId  = 1
-                         , _serverUsers       = []
-                         , _serverHaschatChan = chan
-                         }
+    queue <- newTQueueIO
+    newTVarIO HaschatServer { _serverSocket       = socket
+                            , _serverNextUserId   = 1
+                            , _serverUsers        = []
+                            , _serverHaschatQueue = queue
+                            }
 
-teardownMockServer :: HaschatServer -> IO ()
-teardownMockServer server = sClose $ _serverSocket server
+teardownMockServer :: TVar HaschatServer -> IO ()
+teardownMockServer server = sClose =<< atomically (_serverSocket <$> readTVar server)
 
-withMockServer :: (HaschatServer -> IO ()) -> IO ()
+withMockServer :: (TVar HaschatServer -> IO ()) -> IO ()
 withMockServer = bracket setupMockServer teardownMockServer
 
 main :: IO ()
