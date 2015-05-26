@@ -14,14 +14,14 @@ setupMockServer :: IO HaschatServer
 setupMockServer = do
     socket <- listenOn $ PortNumber 0
     chan <- newChan
-    return HaschatServer { serverSocket      = socket
-                         , serverNextUserId  = 1
-                         , serverUsers       = []
-                         , serverHaschatChan = chan
+    return HaschatServer { _serverSocket      = socket
+                         , _serverNextUserId  = 1
+                         , _serverUsers       = []
+                         , _serverHaschatChan = chan
                          }
 
 teardownMockServer :: HaschatServer -> IO ()
-teardownMockServer server = sClose $ serverSocket server
+teardownMockServer server = sClose $ _serverSocket server
 
 withMockServer :: (HaschatServer -> IO ()) -> IO ()
 withMockServer = bracket setupMockServer teardownMockServer
