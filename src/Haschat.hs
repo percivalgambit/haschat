@@ -1,5 +1,6 @@
-module Haschat (haschat, defaultPort, chatServerPort, serverLoop, sendMessage,
-                processActions, chatter, HaschatAction(..), HaschatServer(..),
+module Haschat (haschat, defaultPort, chatServerPort, newUser, serverLoop,
+                sendMessage, processActions, chatter,
+                HaschatServerFrozen(..), HaschatServer,
                 HaschatUser(..), HaschatMessage(..)) where
 
 import Control.Concurrent (forkIO)
@@ -7,30 +8,45 @@ import Control.Concurrent.STM.TQueue (TQueue, newTQueueIO, writeTQueue, readTQue
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, readTVar,
                                     writeTVar)
 import Control.Monad.STM (atomically)
+import Control.Monad (forever, void)
+import qualified Data.Set as Set
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
 import System.Environment (lookupEnv)
 import System.IO (stderr, hSetBuffering, hPutStrLn, hIsEOF, hGetLine,
                   BufferMode(..), Handle)
 
-data HaschatAction = SendMessage HaschatMessage
-                   | AddUser HaschatUser
+data HaschatAction = AddUser Socket
                    | RemoveUser HaschatUser
+                   | SendMessage HaschatMessage
 
-data HaschatServer = HaschatServer
-    { _serverSocket       :: Socket
-    , _serverNextUserId   :: Int
-    , _serverUsers        :: [HaschatUser]
-    , _serverHaschatQueue :: TQueue HaschatAction
+data HaschatServerFrozen = HaschatServerFrozen
+    { _serverSocket      :: Socket
+    , _serverNextUserId  :: Int
+    , _serverUsers       :: Set.Set HaschatUser
+    , _serverActionQueue :: TQueue HaschatAction
     }
+
+instance Show HaschatServerFrozen where
+    show server = "HaschatServerFrozen {"
+                  ++ show (_serverSocket server)     ++ ", "
+                  ++ show (_serverNextUserId server) ++ ", "
+                  ++ show (_serverUsers server)      ++ "}"
+
+type HaschatServer = TVar HaschatServerFrozen
 
 data HaschatUser = HaschatUser
-    { _userId           :: Int
-    , _userHandle       :: Handle
-    , _userHaschatQueue :: TQueue HaschatAction
+    { _userId          :: Int
+    , _userHandle      :: Handle
+    , _userActionQueue :: TQueue HaschatAction
     }
 
-instance Eq HaschatUser where
-    u1 == u2 = _userId u1 == _userId u2
+instance Ord HaschatUser where
+    compare u1 u2 = compare (_userId u1) (_userId u2)
+
+instance Show HaschatUser where
+    show user = "HaschatUser {"
+                ++ show (_userId user)     ++ ", "
+                ++ show (_userHandle user) ++ "}"
 
 data HaschatMessage = HaschatMessage
     { _messageBody   :: String
@@ -45,18 +61,18 @@ haschat :: IO ()
 haschat = withSocketsDo $ do
     serverPort <- chatServerPort
     listenSock <- listenOn $ PortNumber (fromIntegral serverPort)
-    hPutStrLn stderr $ "Listening on port " ++ (show serverPort)
-    haschatQueue <- newTQueueIO
+    logStr $ "Listening on port " ++ (show serverPort)
+    actionQueue <- newTQueueIO
     let loggerUser = HaschatUser { _userId           = 0
                                  , _userHandle       = stderr
-                                 , _userHaschatQueue = haschatQueue
+                                 , _userActionQueue = actionQueue
                                  }
     server <- newTVarIO $
-        HaschatServer { _serverSocket       = listenSock
-                      , _serverNextUserId   = 1
-                      , _serverUsers        = [loggerUser]
-                      , _serverHaschatQueue = haschatQueue
-                      }
+        HaschatServerFrozen { _serverSocket       = listenSock
+                            , _serverNextUserId   = 1
+                            , _serverUsers        = Set.singleton loggerUser
+                            , _serverActionQueue = actionQueue
+                            }
     _ <- forkIO $ processActions server
     serverLoop server
 
@@ -67,94 +83,80 @@ chatServerPort = do
         Just portStr -> case reads portStr of
             [(portNum, "")] -> return portNum
             _ -> do
-                hPutStrLn stderr $ unwords
-                    [ "WARNING: cannot parse CHAT_SERVER_PORT into an integer."
-                    , "Using default port " ++ show defaultPort
-                    ]
+                logStr $ "WARNING: cannot parse CHAT_SERVER_PORT into an integer."
+                      ++ " Using default port " ++ show defaultPort
                 return defaultPort
         Nothing -> do
-            hPutStrLn stderr $ unwords
-                [ "WARNING: CHAT_SERVER_PORT not set."
-                , "Using default port " ++ show defaultPort
-                ]
+            logStr $ "WARNING: CHAT_SERVER_PORT not set."
+                  ++ " Using default port " ++ show defaultPort
             return defaultPort
 
-serverLoop :: TVar HaschatServer -> IO ()
-serverLoop server = do
-    (handle, hostname, clientPort) <- accept =<< _serverSocket <$> readTVarIO server
-    hPutStrLn stderr $ unwords
-        [ "Accepted connection from"
-        , hostname ++ ":" ++ show clientPort
-        ]
+logStr :: String -> IO ()
+logStr = hPutStrLn stderr
+
+newUser :: HaschatServer -> Handle -> IO HaschatUser
+newUser server handle = atomically $ do
+    frozenServer <- readTVar server
+    let actionQueue = _serverActionQueue frozenServer
+        nextUserId   = _serverNextUserId frozenServer
+        user = HaschatUser { _userId           = nextUserId
+                           , _userHandle       = handle
+                           , _userActionQueue = actionQueue
+                           }
+        updatedUsers = Set.insert user $ _serverUsers frozenServer
+    writeTVar server (frozenServer { _serverNextUserId = succ nextUserId
+                                   , _serverUsers = updatedUsers
+                                   })
+    sendMessage (_userId user ++ " has joined") updatedUsers
+    return user
+
+removeUser :: HaschatServer -> HaschatUser -> IO ()
+removeUser server user = atomically $ do
+    frozenServer <- readTVar server
+    let updatedUsers = Set.delete user $ _serverUsers frozenServer
+    writeTVar server (frozenServer {_serverUsers = updatedUsers})
+    sendMessage (_userId user ++ " has left") updatedUsers
+
+serverLoop :: HaschatServer -> IO ()
+serverLoop server = forever $ do
+    (handle, hostname, clientPort) <- accept . _serverSocket =<< readTVarIO server
+    logStr $ "Accepted connection from"
+          ++ hostname ++ ":" ++ show clientPort
     hSetBuffering handle LineBuffering
     atomically $ do
-        frozenServer <- readTVar server
-        let haschatQueue = _serverHaschatQueue frozenServer
-            nextUserId   = _serverNextUserId frozenServer
-        writeTQueue haschatQueue $ AddUser $
-            HaschatUser { _userId           = nextUserId
-                        , _userHandle       = handle
-                        , _userHaschatQueue = haschatQueue
-                        }
-        writeTVar server (frozenServer {_serverNextUserId = succ nextUserId})
-    serverLoop server
+        actionQueue <- _serverActionQueue <$> readTVar server
+        writeTQueue actionQueue $ AddUser handle
 
-sendMessage :: String -> [HaschatUser] -> IO ()
+sendMessage :: String -> Set.Set HaschatUser -> IO ()
 sendMessage messageStr = mapM_ (flip hPutStrLn messageStr . _userHandle)
 
-processActions :: TVar HaschatServer -> IO ()
-processActions server = do
+sendMessage' :: HaschatServer -> HaschatMessage -> IO ()
+sendMessage' server message = do
+    frozenServer <- readTVarIO server
+    let sender            = _messageSender message
+        messageRecipients = Set.delete sender (_serverUsers server)
+        messageStr        = show (_userId sender) ++ ": " ++ _messageBody message
+    sendMessage messageStr messageRecipients
+
+processActions :: HaschatServer -> IO ()
+processActions server = forever $ do
     action <- atomically $ do
         haschatQueue <- _serverHaschatQueue <$> readTVar server
         readTQueue haschatQueue
     case action of
-        (SendMessage message) -> processMessage server message
-        (AddUser user) -> processAddUser server user
-        (RemoveUser user) -> processRemoveUser server user
-    processActions server
-
-processMessage :: TVar HaschatServer -> HaschatMessage -> IO ()
-processMessage server message = do
-    let sender = _messageSender message
-        messageStr = addMessagePrefix sender $ _messageBody message
-    messageRecipients <- atomically $
-        filter (/= sender) <$> _serverUsers <$> readTVar server
-    sendMessage messageStr messageRecipients where
-        addMessagePrefix sender messageStr =
-            show (_userId sender) ++ ": " ++ messageStr
-
-
-processAddUser :: TVar HaschatServer -> HaschatUser -> IO ()
-processAddUser server user = do
-    let addUserMessage = show (_userId user) ++ " has joined"
-    users <- atomically $ do
-        frozenServer <- readTVar server
-        let updatedUsers = user : (_serverUsers frozenServer)
-        writeTVar server (frozenServer {_serverUsers = updatedUsers})
-        return updatedUsers
-    sendMessage addUserMessage users
-    _ <- forkIO $ chatter user
-    return ()
-
-processRemoveUser :: TVar HaschatServer -> HaschatUser -> IO ()
-processRemoveUser server user = do
-    let removeUserMessage = show (_userId user) ++ " has left"
-    users <- atomically $ do
-        frozenServer <- readTVar server
-        let updatedUsers = filter (/= user) $ _serverUsers frozenServer
-        writeTVar server (frozenServer {_serverUsers = updatedUsers})
-        return updatedUsers
-    sendMessage removeUserMessage users
+        (SendMessage message) -> sendMessage' server message
+        (AddUser handle) -> void $ newUser server handle
+        (RemoveUser user) -> removeUser server user
 
 chatter :: HaschatUser -> IO ()
 chatter user = do
-    hasUserQuit <- hIsEOF $ _userHandle user
-    case hasUserQuit of
-        True -> atomically $ writeTQueue (_userHaschatQueue user) $ RemoveUser user
+    userHasQuit <- hIsEOF $ _userHandle user
+    case userHasQuit of
+        True -> atomically $ writeTQueue (_userActionQueue user) $ RemoveUser user
         False -> do
             messageStr <- hGetLine $ _userHandle user
             atomically $ do
-                writeTQueue (_userHaschatQueue user) $ SendMessage $
+                writeTQueue (_userActionQueue user) $ SendMessage $
                     HaschatMessage { _messageBody   = messageStr
                                    , _messageSender = user
                                    }
