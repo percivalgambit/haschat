@@ -66,6 +66,9 @@ instance Show LogLevel where
 defaultPort :: Int
 defaultPort = 22311
 
+logStr :: LogLevel -> String -> IO ()
+logStr level = hPrintf stderr "%s: %s\n" (show level)
+
 -- | Chat server entry point.
 haschat :: IO ()
 haschat = withSocketsDo $ do
@@ -86,6 +89,28 @@ haschat = withSocketsDo $ do
     void $ forkIO $ processMessages server
     serverLoop server
 
+serverLoop :: HaschatServer -> IO ()
+serverLoop server = forever $ do
+    (handle, hostname, clientPort) <- accept . _serverSocket =<< readTVarIO server
+    logStr Info $ printf "Accepted connection from %s:%d"
+                         hostname
+                         (fromIntegral clientPort :: Int)
+    hSetBuffering handle LineBuffering
+    newUser <- addUser server handle
+    void $ forkFinally (chatter newUser) (\_ -> removeUser server newUser)
+
+chatter :: HaschatUser -> IO ()
+chatter user = do
+    userHasQuit <- hIsEOF $ _userHandle user
+    unless userHasQuit $ do
+        messageStr <- hGetLine $ _userHandle user
+        atomically $ do
+            writeTQueue (_userMessageQueue user) $
+                HaschatMessage { _messageBody   = messageStr
+                               , _messageSender = user
+                               }
+        chatter user
+
 chatServerPort :: IO Int
 chatServerPort = do
     maybePort <- lookupEnv "CHAT_SERVER_PORT"
@@ -102,8 +127,8 @@ chatServerPort = do
                                     \ Using default port %d" defaultPort
             return defaultPort
 
-logStr :: LogLevel -> String -> IO ()
-logStr level = hPrintf stderr "%s: %s\n" (show level)
+sendMessage :: String -> Set.Set HaschatUser -> IO ()
+sendMessage messageStr = mapM_ (flip hPutStrLn messageStr . _userHandle)
 
 addUser :: HaschatServer -> Handle -> IO HaschatUser
 addUser server handle = do
@@ -134,19 +159,6 @@ removeUser server user = do
         return $ sendMessage (printf "%d has left" $ _userId user) updatedUsers
     hClose $ _userHandle user
 
-serverLoop :: HaschatServer -> IO ()
-serverLoop server = forever $ do
-    (handle, hostname, clientPort) <- accept . _serverSocket =<< readTVarIO server
-    logStr Info $ printf "Accepted connection from %s:%d"
-                         hostname
-                         (fromIntegral clientPort :: Int)
-    hSetBuffering handle LineBuffering
-    newUser <- addUser server handle
-    void $ forkFinally (chatter newUser) (\_ -> removeUser server newUser)
-
-sendMessage :: String -> Set.Set HaschatUser -> IO ()
-sendMessage messageStr = mapM_ (flip hPutStrLn messageStr . _userHandle)
-
 processMessages :: HaschatServer -> IO ()
 processMessages server = forever $ join $ atomically $ do
     frozenServer <- readTVar server
@@ -155,15 +167,3 @@ processMessages server = forever $ join $ atomically $ do
         messageRecipients = Set.delete sender (_serverUsers frozenServer)
         messageStr        = printf "%d: %s" (_userId sender) (_messageBody message)
     return $ sendMessage messageStr messageRecipients
-
-chatter :: HaschatUser -> IO ()
-chatter user = do
-    userHasQuit <- hIsEOF $ _userHandle user
-    unless userHasQuit $ do
-        messageStr <- hGetLine $ _userHandle user
-        atomically $ do
-            writeTQueue (_userMessageQueue user) $
-                HaschatMessage { _messageBody   = messageStr
-                               , _messageSender = user
-                               }
-        chatter user
