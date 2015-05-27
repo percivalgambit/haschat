@@ -21,7 +21,7 @@ setupMockServer = do
     newTVarIO HaschatServerFrozen { _serverSocket       = socket
                                   , _serverNextUserId   = 1
                                   , _serverUsers        = Set.empty
-                                  , _serverActionQueue = queue
+                                  , _serverMessageQueue = queue
                                   }
 
 teardownMockServer :: HaschatServer -> IO ()
@@ -38,7 +38,7 @@ withMockHandle = bracket newMockHandle hClose
 
 withMockUser :: HaschatServer -> (HaschatUser -> IO ()) -> IO ()
 withMockUser server f = withMockHandle $ \handle -> do
-    user <- newUser server handle
+    user <- addUser server handle
     atomically $ do
         frozenServer <- readTVar server
         let updatedUsers = Set.insert user $ _serverUsers frozenServer
