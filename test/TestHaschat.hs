@@ -21,7 +21,7 @@ setupMockServer = do
     newTVarIO HaschatServerFrozen { _serverSocket       = socket
                                   , _serverNextUserId   = 1
                                   , _serverUsers        = Set.empty
-                                  , _serverHaschatQueue = queue
+                                  , _serverActionQueue = queue
                                   }
 
 teardownMockServer :: HaschatServer -> IO ()
