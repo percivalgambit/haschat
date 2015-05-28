@@ -1,15 +1,17 @@
-module Haschat (haschat, defaultPort, chatServerPort, addUser, serverLoop,
-                sendMessage, processMessages, chatter,
-                HaschatServerFrozen(..), HaschatServer,
-                HaschatUser(..), HaschatMessage(..)) where
+{-# LANGUAGE PatternGuards #-}
+
+module Haschat (haschat, defaultPort, chatServerPort, newUser, serverLoop,
+                chatter, listen, HaschatServerFrozen(..), HaschatServer,
+                HaschatUser(..), HaschatMessage) where
 
 import Control.Concurrent (forkIO, forkFinally)
-import Control.Concurrent.STM.TQueue (TQueue, newTQueueIO, writeTQueue, readTQueue)
+import Control.Concurrent.Async (race_)
+import Control.Concurrent.STM.TChan (TChan, newTChanIO, dupTChan,
+                                     writeTChan, readTChan)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVarIO, readTVar,
                                     writeTVar)
 import Control.Monad.STM (atomically)
-import Control.Monad (forever, void, unless, join)
-import qualified Data.Set as Set
+import Control.Monad (forever, unless, join, void)
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
 import System.Environment (lookupEnv)
 import System.IO (stderr, hSetBuffering, hIsEOF, hGetLine, hPutStrLn, hClose,
@@ -17,25 +19,23 @@ import System.IO (stderr, hSetBuffering, hIsEOF, hGetLine, hPutStrLn, hClose,
 import Text.Printf (printf, hPrintf)
 
 data HaschatServerFrozen = HaschatServerFrozen
-    { _serverSocket       :: Socket
-    , _serverNextUserId   :: Int
-    , _serverUsers        :: Set.Set HaschatUser
-    , _serverMessageQueue :: TQueue HaschatMessage
+    { _serverSocket      :: Socket
+    , _serverNextUserId  :: Int
+    , _serverMessageChan :: TChan HaschatMessage
     }
 
 instance Show HaschatServerFrozen where
     show server = printf "HaschatServerFrozen {_serverSocket = %s, \
-                         \_serverNextUserId = %s, _serverUsers = %s}"
+                         \_serverNextUserId = %s}"
                          (show $ _serverSocket server)
                          (show $ _serverNextUserId server)
-                         (show $ _serverUsers server)
 
 type HaschatServer = TVar HaschatServerFrozen
 
 data HaschatUser = HaschatUser
-    { _userId           :: Int
-    , _userHandle       :: Handle
-    , _userMessageQueue :: TQueue HaschatMessage
+    { _userId          :: Int
+    , _userHandle      :: Handle
+    , _userMessageChan :: TChan HaschatMessage
     }
 
 instance Eq HaschatUser where
@@ -49,10 +49,7 @@ instance Show HaschatUser where
                        (show $ _userId user)
                        (show $ _userHandle user)
 
-data HaschatMessage = HaschatMessage
-    { _messageBody   :: String
-    , _messageSender :: HaschatUser
-    } deriving Show
+type HaschatMessage = String
 
 data LogLevel = Info
               | Warning
@@ -75,18 +72,14 @@ haschat = withSocketsDo $ do
     serverPort <- chatServerPort
     listenSock <- listenOn $ PortNumber $ fromIntegral serverPort
     logStr Info $ printf "Listening on port %d" serverPort
-    messageQueue <- newTQueueIO
-    let loggerUser = HaschatUser { _userId           = 0
-                                 , _userHandle       = stderr
-                                 , _userMessageQueue = messageQueue
-                                 }
+    messageChan <- newTChanIO
     server <- newTVarIO $
-        HaschatServerFrozen { _serverSocket       = listenSock
-                            , _serverNextUserId   = 1
-                            , _serverUsers        = Set.singleton loggerUser
-                            , _serverMessageQueue = messageQueue
+        HaschatServerFrozen { _serverSocket      = listenSock
+                            , _serverNextUserId  = 0
+                            , _serverMessageChan = messageChan
                             }
-    void $ forkIO $ processMessages server
+    loggerUser <- newUser server stderr
+    void $ forkIO (listen loggerUser)
     serverLoop server
 
 serverLoop :: HaschatServer -> IO ()
@@ -96,8 +89,11 @@ serverLoop server = forever $ do
                          hostname
                          (fromIntegral clientPort :: Int)
     hSetBuffering handle LineBuffering
-    newUser <- addUser server handle
-    void $ forkFinally (chatter newUser) (\_ -> removeUser server newUser)
+    user <- newUser server handle
+    forkFinally (userLoop user) (\_ -> removeUser server user)
+
+userLoop :: HaschatUser -> IO ()
+userLoop user = race_ (chatter user) (listen user)
 
 chatter :: HaschatUser -> IO ()
 chatter user = do
@@ -105,11 +101,16 @@ chatter user = do
     unless userHasQuit $ do
         messageStr <- hGetLine $ _userHandle user
         atomically $ do
-            writeTQueue (_userMessageQueue user) $
-                HaschatMessage { _messageBody   = messageStr
-                               , _messageSender = user
-                               }
+            writeTChan (_userMessageChan user) $
+                printf "%d: %s" (_userId user) messageStr
         chatter user
+
+listen :: HaschatUser -> IO ()
+listen user = forever $ join $ atomically $ do
+    message <- readTChan $ _userMessageChan user
+    let senderStr = takeWhile (/= ':') message
+    return $ unless (senderStr == show (_userId user)) $
+        hPutStrLn (_userHandle user) message
 
 chatServerPort :: IO Int
 chatServerPort = do
@@ -127,43 +128,23 @@ chatServerPort = do
                                     \ Using default port %d" defaultPort
             return defaultPort
 
-sendMessage :: String -> Set.Set HaschatUser -> IO ()
-sendMessage messageStr = mapM_ (flip hPutStrLn messageStr . _userHandle)
-
-addUser :: HaschatServer -> Handle -> IO HaschatUser
-addUser server handle = do
-    (welcomeUser, newUser) <- atomically $ do
+newUser :: HaschatServer -> Handle -> IO HaschatUser
+newUser server handle = atomically $ do
         frozenServer <- readTVar server
-        let messageQueue = _serverMessageQueue frozenServer
-            nextUserId   = _serverNextUserId frozenServer
-            user         = HaschatUser { _userId           = nextUserId
-                                       , _userHandle       = handle
-                                       , _userMessageQueue = messageQueue
+        messageChan <- dupTChan $ _serverMessageChan frozenServer
+        let nextUserId   = _serverNextUserId frozenServer
+            user         = HaschatUser { _userId          = nextUserId
+                                       , _userHandle      = handle
+                                       , _userMessageChan = messageChan
                                        }
-            updatedUsers = Set.insert user $ _serverUsers frozenServer
         writeTVar server (frozenServer { _serverNextUserId = succ nextUserId
-                                       , _serverUsers      = updatedUsers
                                        })
-        welcome <- return $
-            sendMessage (printf "%d has joined" $ _userId user) updatedUsers
-        return (welcome, user)
-    welcomeUser
-    return newUser
+        writeTChan messageChan $ printf "%d has joined" $ _userId user
+        return user
 
 removeUser :: HaschatServer -> HaschatUser -> IO ()
 removeUser server user = do
-    join $ atomically $ do
-        frozenServer <- readTVar server
-        let updatedUsers = Set.delete user $ _serverUsers frozenServer
-        writeTVar server (frozenServer {_serverUsers = updatedUsers})
-        return $ sendMessage (printf "%d has left" $ _userId user) updatedUsers
     hClose $ _userHandle user
-
-processMessages :: HaschatServer -> IO ()
-processMessages server = forever $ join $ atomically $ do
-    frozenServer <- readTVar server
-    message <- readTQueue $ _serverMessageQueue frozenServer
-    let sender            = _messageSender message
-        messageRecipients = Set.delete sender (_serverUsers frozenServer)
-        messageStr        = printf "%d: %s" (_userId sender) (_messageBody message)
-    return $ sendMessage messageStr messageRecipients
+    atomically $ do
+        messageChan <- _serverMessageChan <$> readTVar server
+        writeTChan messageChan $ printf "%d has left" (_userId user)
