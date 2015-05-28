@@ -6,9 +6,8 @@ import Test.QuickCheck
 import Haschat
 
 import Control.Concurrent.STM.TChan (newTChanIO)
-import Control.Concurrent.STM.TVar (newTVarIO, readTVar)
+import Control.Concurrent.STM.TVar (newTVarIO, readTVarIO)
 import Control.Monad (void)
-import Control.Monad.STM (atomically)
 import Control.Exception (bracket)
 import Network (withSocketsDo, listenOn, sClose, PortID(..))
 import System.Environment (setEnv, unsetEnv)
@@ -17,14 +16,15 @@ import System.IO (Handle, openTempFile, hClose)
 setupMockServer :: IO HaschatServer
 setupMockServer = do
     socket <- listenOn $ PortNumber 0
+    nextUserId <- newTVarIO 1
     chan <- newTChanIO
-    newTVarIO HaschatServerFrozen { _serverSocket       = socket
-                                  , _serverNextUserId   = 1
-                                  , _serverMessageChan = chan
-                                  }
+    return $HaschatServer { _serverSocket      = socket
+                          , _serverNextUserId  = nextUserId
+                          , _serverMessageChan = chan
+                          }
 
 teardownMockServer :: HaschatServer -> IO ()
-teardownMockServer server = sClose =<< atomically (_serverSocket <$> readTVar server)
+teardownMockServer = sClose . _serverSocket
 
 withMockServer :: (HaschatServer -> IO a) -> IO a
 withMockServer = bracket setupMockServer teardownMockServer
@@ -35,11 +35,11 @@ newMockHandle = snd <$> openTempFile "/tmp" "haschatTest"
 withMockHandle :: (Handle -> IO a) -> IO a
 withMockHandle = bracket newMockHandle hClose
 
-addMockUser :: HaschatServer -> IO HaschatUser
-addMockUser server = withMockHandle $ newUser server
+newMockUser :: HaschatServer -> IO HaschatUser
+newMockUser = withMockHandle . newUser
 
 withMockUser :: HaschatServer -> (HaschatUser -> IO a) -> IO a
-withMockUser server = bracket (addMockUser server) (void . return)
+withMockUser server = bracket (newMockUser server) (void . return)
 
 main :: IO ()
 main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
@@ -64,9 +64,9 @@ main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
 
         describe "testing closures" $ do
             it "should let me instantiate objects for the tests" $
-                withMockServer $ \server ->
-                    withMockUser server $ \user1 -> withMockUser server $ \user2 -> do
-                        _userId user1 `shouldBe` 1
-                        _userId user2 `shouldBe` 2
-                        nextUserId <- atomically $ _serverNextUserId <$> readTVar server
-                        nextUserId `shouldBe` 3
+                withMockServer $ \server -> withMockUser server $ \u1 ->
+                    withMockUser server $ \u2 -> do
+                            _userId u1 `shouldBe` 1
+                            _userId u2 `shouldBe` 2
+                            nextId <- readTVarIO $ _serverNextUserId server
+                            nextId `shouldBe` 3
