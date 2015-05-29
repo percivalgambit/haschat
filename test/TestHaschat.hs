@@ -10,11 +10,12 @@ import Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
-import Control.Monad (void, replicateM_)
+import Control.Monad (void, replicateM_, replicateM, foldM_)
 import Data.IORef (newIORef)
 import Network (withSocketsDo, listenOn, sClose, connectTo, PortID(..))
 import System.Environment (setEnv, unsetEnv)
-import System.IO (openTempFile, hClose, Handle)
+import System.IO (openTempFile, hGetLine, hPutStrLn, hClose, Handle)
+import System.Random (newStdGen, randomR, StdGen)
 import Text.Printf (printf)
 
 haschatPort :: Int
@@ -39,8 +40,8 @@ withMockServer initialUserId = bracket (setupMockServer initialUserId)
 
 withMockUsers :: HaschatServer -> Int -> ([HaschatUser] -> IO a) -> IO a
 withMockUsers server numUsers = bracket setupUsers teardownUsers where
-    setupUsers = sequence $ replicate numUsers (newMockHandle >>= newUser server)
-    teardownUsers users = sequence_ $ userQuit <$> users
+    setupUsers = replicateM numUsers (newMockHandle >>= newUser server)
+    teardownUsers users = mapM_ userQuit users
     newMockHandle = snd <$> openTempFile "/tmp" "haschatTest"
 
 withDefaultTestHarness :: Int
@@ -57,10 +58,11 @@ withHaschatServer action =
             killThread
             (const action)
 
-withClientConnection :: (Handle -> IO a) -> IO a
-withClientConnection =
-    bracket (connectTo "localhost" $ PortNumber (fromIntegral haschatPort))
-            hClose
+withClientConnections :: Int -> ([Handle] -> IO a) -> IO a
+withClientConnections numConnections =
+    bracket (replicateM numConnections newConnection)
+            (mapM_ hClose) where
+        newConnection = connectTo "localhost" $ PortNumber (fromIntegral haschatPort)
 
 receiveNextValidMessage :: HaschatUser -> IO HaschatMessage
 receiveNextValidMessage user = do
@@ -163,5 +165,46 @@ main = withSocketsDo $ hspec $ do
 
         describe "the entire server" $ around_ withHaschatServer $ do
             it "should be able to accept multiple incoming connections" $
-                withClientConnection $ \_ ->
-                    withClientConnection $ \_ -> return ()
+                withClientConnections 2 $ \_ -> return ()
+
+            it "should support a conversation between users" $
+                --property $ \client1Messages client2Messages ->
+                    withClientConnections 2 $ \[client1, client2] -> do
+                        client1Join1 <- hGetLine client1
+                        --client2Join1 <- hGetLine client1
+                        --client2Join2 <- hGetLine client2
+                        client1Join1 `shouldBe` printf joinMessageFmt (1 :: Int)
+                        --client2Join1 `shouldBe` printf joinMessageFmt (2 :: Int)
+                        --client2Join2 `shouldBe` printf joinMessageFmt (2 :: Int)
+
+                        --gen <- newStdGen
+                        --let messages = zip client1Messages client2Messages
+                        --foldM_ (processMessages client1 client2) gen messages
+
+                        --hClose client2
+                        --client2Left1 <- hGetLine client1
+                        --client2Left1 `shouldBe` printf leftMessageFmt (2 :: Int)
+                        where
+                            processMessages :: Handle
+                                            -> Handle
+                                            -> StdGen
+                                            -> (String, String)
+                                            -> IO StdGen
+                            processMessages client1 client2 gen msg = do
+                                let (clientNum, gen') = randomR (1, 2) gen
+                                if (clientNum :: Int) == 1
+                                then do
+                                    hPutStrLn client1 $ fst msg
+                                    readMsg <- hGetLine client2
+                                    readMsg `shouldBe`
+                                        printf messageFmt (1 :: Int) (fst msg)
+                                    return gen'
+                                else do
+                                    hPutStrLn client2 $ snd msg
+                                    readMsg <- hGetLine client1
+                                    readMsg `shouldBe`
+                                        printf messageFmt (2 :: Int) (snd msg)
+                                    return gen'
+                            joinMessageFmt = "%d has joined"
+                            leftMessageFmt = "%d has left"
+                            messageFmt     = "%d: %s"

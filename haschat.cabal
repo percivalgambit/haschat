@@ -40,6 +40,7 @@ test-suite test-haschat
                        haschat,
                        hspec ==2.1.7,
                        network ==2.6.1.0,
-                       QuickCheck ==2.8.1
+                       QuickCheck ==2.8.1,
+                       random ==1.1
   default-language:    Haskell2010
   ghc-options:         -Wall
