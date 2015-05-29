@@ -9,7 +9,7 @@ import Control.Concurrent (forkIO, forkFinally)
 import Control.Concurrent.Async (race_)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan, dupChan)
 import Control.Exception (handle)
-import Control.Monad (forever, when, unless, void)
+import Control.Monad (forever, unless, void)
 import Data.Functor ((<$>)) -- needed for base <4.8
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef)
 import Network (PortID(..), Socket, withSocketsDo, listenOn, accept)
