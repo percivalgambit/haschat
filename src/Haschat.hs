@@ -61,6 +61,8 @@ haschat = withSocketsDo $ do
                                , _serverNextUserId  = nextUserId
                                , _serverMessageChan = messageChan
                                }
+    -- user 0 is the logging user that will log everything to stderr on the
+    -- terminal where haschat is being run
     loggerUser <- newUser server stderr
     void $ forkIO (listen loggerUser)
     serverLoop server
@@ -139,7 +141,7 @@ newUser server userHandle = do
     userChan <- dupChan $ _serverMessageChan server
     userId <- readIORef $ _serverNextUserId server
     modifyIORef (_serverNextUserId server) succ
-    when (userId > 0) $ writeChan userChan $ printf "%d has joined" $ userId
+    writeChan userChan $ printf "%d has joined" $ userId
     return $ HaschatUser { _userId          = userId
                          , _userHandle      = userHandle
                          , _userMessageChan = userChan
