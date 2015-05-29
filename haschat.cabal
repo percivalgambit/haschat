@@ -4,13 +4,9 @@
 name:                haschat
 version:             0.1.0.0
 synopsis:            A simple chat server
--- description:
 homepage:            https://github.com/percivalgambit/haschat
--- license:
--- license-file:        LICENSE
 author:              Lee Ehudin
 maintainer:          percivalgambit@gmail.com
--- copyright:
 category:            System
 build-type:          Simple
 extra-source-files:  README.md,
@@ -32,8 +28,6 @@ library
 
 executable haschat
   main-is:             Main.hs
-  -- other-modules:
-  -- other-extensions:
   build-depends:       base >=4.7 && <4.9,
                        haschat
   default-language:    Haskell2010
