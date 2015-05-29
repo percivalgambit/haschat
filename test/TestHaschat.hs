@@ -12,6 +12,7 @@ import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
 import Control.Monad (void, replicateM_, replicateM)
 import Data.Char (isAscii)
+import Data.Functor ((<$>)) -- needed for base <4.8
 import Data.IORef (newIORef)
 import Network (withSocketsDo, listenOn, sClose, connectTo, PortID(..))
 import System.Environment (setEnv, unsetEnv)
