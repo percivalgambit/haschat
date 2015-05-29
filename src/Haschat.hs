@@ -107,10 +107,16 @@ listen user = forever $ do
         Just msg -> hPutStrLn (_userHandle user) msg
         Nothing  -> return ()
 
+-- Wrapper for broadcasting a message to every user.  Prepends a prefix of the
+-- sender's user id, then sends the message to every other user.
 sendMessage :: HaschatUser -> HaschatMessage -> IO ()
 sendMessage user message =
     writeChan (_userMessageChan user) $ printf "%d: %s" (_userId user) message
 
+-- Wrapper for receiving messages.  Reads a message from the network, then
+-- determines if it was sent from the receiver.  The message is then wrapped
+-- in a Maybe monad, where it will be Just message if it was sent from a
+-- different user and Nothing if it was sent from the receiver.
 receiveMessage :: HaschatUser -> IO (Maybe HaschatMessage)
 receiveMessage user = do
     message <- readChan $ _userMessageChan user
@@ -118,6 +124,10 @@ receiveMessage user = do
     if senderStr /= show (_userId user) then return $ Just message
                                         else return Nothing
 
+-- Create a new user and update the nextUserId counter of the server.  The new
+-- user will also obtain a copy of the global message channel so it can communicate
+-- with other users.  A welcome message is also sent to all users (even the new one)
+-- notifying them that a new user has joined.
 newUser :: HaschatServer -> Handle -> IO HaschatUser
 newUser server userHandle = do
     userChan <- dupChan $ _serverMessageChan server
@@ -129,6 +139,8 @@ newUser server userHandle = do
                          , _userMessageChan = userChan
                          }
 
+-- Perform cleanup of a user object before it dissapears.  A message will also be
+-- sent to all remaining users, notifying them that this user has quit.
 userQuit :: HaschatUser -> IO ()
 userQuit user = do
     writeChan (_userMessageChan user) $ printf "%d has left" (_userId user)

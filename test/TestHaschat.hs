@@ -7,15 +7,16 @@ import Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
                 userQuit, HaschatServer(..), HaschatUser(..),
                 HaschatMessage)
 
-import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
-import Control.Monad (void, replicateM_, replicateM, foldM_)
+import Control.Monad (void, replicateM_, replicateM)
+import Data.Char (isAscii)
 import Data.IORef (newIORef)
 import Network (withSocketsDo, listenOn, sClose, connectTo, PortID(..))
 import System.Environment (setEnv, unsetEnv)
 import System.IO (openTempFile, hGetLine, hPutStrLn, hClose, Handle)
-import System.Random (newStdGen, randomR, StdGen)
+import System.Random (newStdGen, randoms, split)
 import Text.Printf (printf)
 
 haschatPort :: Int
@@ -60,7 +61,7 @@ withHaschatServer action =
 
 withClientConnections :: Int -> ([Handle] -> IO a) -> IO a
 withClientConnections numConnections =
-    bracket (replicateM numConnections newConnection)
+    bracket (replicateM numConnections (threadDelay 100 >> newConnection))
             (mapM_ hClose) where
         newConnection = connectTo "localhost" $ PortNumber (fromIntegral haschatPort)
 
@@ -143,7 +144,7 @@ main = withSocketsDo $ hspec $ do
 
                     return ()
 
-        describe "a message" $
+        describe "a message" $ do
             it "should be prefixed with the user's id" $
                 property $ \initialUserId randMsg1 randMsg2 ->
                     withDefaultTestHarness initialUserId $ \u1 u2 -> do
@@ -161,50 +162,56 @@ main = withSocketsDo $ hspec $ do
                         u1Message `shouldBe` u2SentMsg
                         u2Message `shouldBe` u1SentMsg
 
+            it "can contain unicode characters" $ property $ \initialUserId ->
+                withDefaultTestHarness initialUserId $ \u1 u2 -> do
+                    let u1SentMsg = printf "%d: ☺" (_userId u1)
+                    let u2SentMsg = printf "%d: ☺" (_userId u2)
+
+                    discardNMessages 2 u1
+                    discardNMessages 1 u2
+                    sendMessage u1 "☺"
+                    sendMessage u2 "☺"
+
+                    u1Message <- receiveNextValidMessage u1
+                    u2Message <- receiveNextValidMessage u2
+
+                    u1Message `shouldBe` u2SentMsg
+                    u2Message `shouldBe` u1SentMsg
+
     describe "Integration tests" $ do
 
         describe "the entire server" $ around_ withHaschatServer $ do
-            it "should be able to accept multiple incoming connections" $
-                withClientConnections 2 $ \_ -> return ()
+            --it "should be able to accept multiple incoming connections" $
+             --   withClientConnections 2 $ \_ -> return ()
 
             it "should support a conversation between users" $
-                --property $ \client1Messages client2Messages ->
-                    withClientConnections 2 $ \[client1, client2] -> do
-                        client1Join1 <- hGetLine client1
-                        --client2Join1 <- hGetLine client1
-                        --client2Join2 <- hGetLine client2
-                        client1Join1 `shouldBe` printf joinMessageFmt (1 :: Int)
-                        --client2Join1 `shouldBe` printf joinMessageFmt (2 :: Int)
-                        --client2Join2 `shouldBe` printf joinMessageFmt (2 :: Int)
+                withClientConnections 2 $ \[client1, client2] -> do
+                    -- test join messages
+                    client1Join1 <- hGetLine client1
+                    client2Join1 <- hGetLine client1
+                    client2Join2 <- hGetLine client2
+                    client1Join1 `shouldBe` printf joinMessageFmt (1 :: Int)
+                    client2Join1 `shouldBe` printf joinMessageFmt (2 :: Int)
+                    client2Join2 `shouldBe` printf joinMessageFmt (2 :: Int)
 
-                        --gen <- newStdGen
-                        --let messages = zip client1Messages client2Messages
-                        --foldM_ (processMessages client1 client2) gen messages
+                    -- test 2 user conversation
+                    (gen, gen') <- split <$> newStdGen
+                    let randMsg1 = filter isAscii $ take 100 $ randoms gen
+                        randMsg2 = filter isAscii $ take 100 $ randoms gen'
 
-                        --hClose client2
-                        --client2Left1 <- hGetLine client1
-                        --client2Left1 `shouldBe` printf leftMessageFmt (2 :: Int)
-                        where
-                            processMessages :: Handle
-                                            -> Handle
-                                            -> StdGen
-                                            -> (String, String)
-                                            -> IO StdGen
-                            processMessages client1 client2 gen msg = do
-                                let (clientNum, gen') = randomR (1, 2) gen
-                                if (clientNum :: Int) == 1
-                                then do
-                                    hPutStrLn client1 $ fst msg
-                                    readMsg <- hGetLine client2
-                                    readMsg `shouldBe`
-                                        printf messageFmt (1 :: Int) (fst msg)
-                                    return gen'
-                                else do
-                                    hPutStrLn client2 $ snd msg
-                                    readMsg <- hGetLine client1
-                                    readMsg `shouldBe`
-                                        printf messageFmt (2 :: Int) (snd msg)
-                                    return gen'
-                            joinMessageFmt = "%d has joined"
-                            leftMessageFmt = "%d has left"
-                            messageFmt     = "%d: %s"
+                    hPutStrLn client1 randMsg1
+                    client2Message <- hGetLine client2
+                    hPutStrLn client2 randMsg2
+                    client1Message <- hGetLine client1
+
+                    client1Message `shouldBe` printf messageFmt (2 :: Int) randMsg2
+                    client2Message `shouldBe` printf messageFmt (1 :: Int) randMsg1
+
+                    -- test quit message
+                    hClose client2
+                    client2Left1 <- hGetLine client1
+                    client2Left1 `shouldBe` printf leftMessageFmt (2 :: Int)
+                    where
+                        joinMessageFmt = "%d has joined"
+                        leftMessageFmt = "%d has left"
+                        messageFmt     = "%d: %s"
