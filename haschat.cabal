@@ -20,9 +20,7 @@ library
   exposed-modules:     Haschat
   build-depends:       async ==2.0.2,
                        base >=4.7 && <4.9,
-                       containers ==0.5.6.3,
-                       network ==2.6.1.0,
-                       stm == 2.4.4
+                       network ==2.6.1.0
   default-language:    Haskell2010
   ghc-options:         -Wall
 
@@ -39,11 +37,9 @@ test-suite test-haschat
   main-is:             TestHaschat.hs
   type:                exitcode-stdio-1.0
   build-depends:       base >=4.7 && <4.9,
-                       containers ==0.5.6.3,
                        haschat,
                        hspec ==2.1.7,
                        network ==2.6.1.0,
-                       QuickCheck ==2.8.1,
-                       stm ==2.4.4
+                       QuickCheck ==2.8.1
   default-language:    Haskell2010
   ghc-options:         -Wall

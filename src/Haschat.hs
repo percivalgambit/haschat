@@ -1,30 +1,31 @@
-module Haschat (haschat, defaultPort, chatServerPort, newUser, serverLoop,
+module Haschat (haschat, chatServerPort, newUser, serverLoop,
                 chatter, listen, HaschatServer(..), HaschatUser(..),
                 HaschatMessage) where
 
 import Control.Concurrent (forkIO, forkFinally)
 import Control.Concurrent.Async (race_)
-import Control.Concurrent.STM.TChan (TChan, newBroadcastTChanIO, dupTChan,
-                                     writeTChan, readTChan)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
-import Control.Monad.STM (atomically)
-import Control.Monad (forever, unless, join, void)
+import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan, dupChan)
+import Control.Exception (handle)
+import Control.Monad (forever, unless, void)
+import Data.IORef (IORef, newIORef, readIORef, modifyIORef)
 import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
-import System.Environment (lookupEnv)
+import System.Environment (getEnv)
 import System.IO (stderr, hSetBuffering, hIsEOF, hGetLine, hPutStrLn, hClose,
                   BufferMode(..), Handle)
+import System.IO.Error (isDoesNotExistError, isUserError)
 import Text.Printf (printf, hPrintf)
+import Text.Read (readMaybe)
 
 data HaschatServer = HaschatServer
     { _serverSocket      :: Socket
-    , _serverNextUserId  :: TVar Int
-    , _serverMessageChan :: TChan HaschatMessage
+    , _serverNextUserId  :: IORef Int
+    , _serverMessageChan :: Chan HaschatMessage
     }
 
 data HaschatUser = HaschatUser
     { _userId          :: Int
     , _userHandle      :: Handle
-    , _userMessageChan :: TChan HaschatMessage
+    , _userMessageChan :: Chan HaschatMessage
     }
 
 type HaschatMessage = String
@@ -38,9 +39,6 @@ instance Show LogLevel where
     show Warning = "WARNING"
     show Error   = "ERROR"
 
-defaultPort :: Int
-defaultPort = 22311
-
 logStr :: LogLevel -> String -> IO ()
 logStr level = hPrintf stderr "%s: %s\n" (show level)
 
@@ -50,8 +48,8 @@ haschat = withSocketsDo $ do
     serverPort <- chatServerPort
     listenSock <- listenOn $ PortNumber $ fromIntegral serverPort
     logStr Info $ printf "Listening on port %d" serverPort
-    messageChan <- newBroadcastTChanIO
-    nextUserId <- newTVarIO 0
+    messageChan <- newChan
+    nextUserId <- newIORef 0
     let server = HaschatServer { _serverSocket      = listenSock
                                , _serverNextUserId  = nextUserId
                                , _serverMessageChan = messageChan
@@ -61,29 +59,22 @@ haschat = withSocketsDo $ do
     serverLoop server
 
 chatServerPort :: IO Int
-chatServerPort = do
-    maybePort <- lookupEnv "CHAT_SERVER_PORT"
-    case maybePort of
-        Just portStr -> case reads portStr of
-            [(portNum, "")] -> return $ portNum
-            _ -> do
-                logStr Warning $
-                    printf "cannot parse CHAT_SERVER_PORT into an integer.\
-                           \ Using default port %d" defaultPort
-                return defaultPort
-        Nothing -> do
-            logStr Warning $ printf "CHAT_SERVER_PORT not set.\
-                                    \ Using default port %d" defaultPort
-            return defaultPort
+chatServerPort = handle handler $ do
+    Just port <- readMaybe <$> getEnv "CHAT_SERVER_PORT"
+    return port where
+        handler e
+            | isDoesNotExistError e = error "CHAT_SERVER_PORT not set."
+            | isUserError e = error "cannot parse CHAT_SERVER_PORT into an integer."
+            | otherwise = error "unknown error when getting CHAT_SERVER_PORT."
 
 serverLoop :: HaschatServer -> IO ()
 serverLoop server = forever $ do
-    (handle, hostname, clientPort) <- accept $ _serverSocket server
+    (clientHandle, hostname, clientPort) <- accept $ _serverSocket server
     logStr Info $ printf "Accepted connection from %s:%d"
                          hostname
                          (fromIntegral clientPort :: Int)
-    hSetBuffering handle LineBuffering
-    user <- newUser server handle
+    hSetBuffering clientHandle LineBuffering
+    user <- newUser server clientHandle
     void $ forkFinally (userLoop user) (\_ -> userQuit user) where
         userLoop u = race_ (chatter u) (listen u)
 
@@ -92,33 +83,27 @@ chatter user = do
     userHasQuit <- hIsEOF $ _userHandle user
     unless userHasQuit $ do
         messageStr <- hGetLine $ _userHandle user
-        atomically $
-            writeTChan (_userMessageChan user) $
-                printf "%d: %s" (_userId user) messageStr
+        writeChan (_userMessageChan user) $ printf "%d: %s" (_userId user) messageStr
         chatter user
 
 listen :: HaschatUser -> IO ()
-listen user = forever $ join $ atomically $ do
-    message <- readTChan $ _userMessageChan user
+listen user = forever $ do
+    message <- readChan $ _userMessageChan user
     let senderStr = takeWhile (/= ':') message
-    return $ unless (senderStr == show (_userId user)) $
-        hPutStrLn (_userHandle user) message
+    unless (senderStr == show (_userId user)) $ hPutStrLn (_userHandle user) message
 
 newUser :: HaschatServer -> Handle -> IO HaschatUser
-newUser server handle = atomically $ do
-    userChan <- dupTChan $ _serverMessageChan server
-    userId <- readTVar $ _serverNextUserId server
-    writeTVar (_serverNextUserId server) (succ userId)
-    let user = HaschatUser { _userId          = userId
-                           , _userHandle      = handle
-                           , _userMessageChan = userChan
-                           }
-    writeTChan userChan $ printf "%d has joined" $ _userId user
-    return user
-
+newUser server userHandle = do
+    userChan <- dupChan $ _serverMessageChan server
+    userId <- readIORef $ _serverNextUserId server
+    modifyIORef (_serverNextUserId server) succ
+    writeChan userChan $ printf "%d has joined" $ userId
+    return $ HaschatUser { _userId          = userId
+                         , _userHandle      = userHandle
+                         , _userMessageChan = userChan
+                         }
 
 userQuit :: HaschatUser -> IO ()
 userQuit user = do
+    writeChan (_userMessageChan user) $ printf "%d has left" (_userId user)
     hClose $ _userHandle user
-    atomically $
-        writeTChan (_userMessageChan user) $ printf "%d has left" (_userId user)
