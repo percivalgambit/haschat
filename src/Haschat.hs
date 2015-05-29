@@ -84,10 +84,8 @@ serverLoop server = forever $ do
                          (fromIntegral clientPort :: Int)
     hSetBuffering handle LineBuffering
     user <- newUser server handle
-    forkFinally (userLoop user) (\_ -> userQuit user)
-
-userLoop :: HaschatUser -> IO ()
-userLoop user = race_ (chatter user) (listen user)
+    void $ forkFinally (userLoop user) (\_ -> userQuit user) where
+        userLoop u = race_ (chatter u) (listen u)
 
 chatter :: HaschatUser -> IO ()
 chatter user = do
@@ -117,6 +115,7 @@ newUser server handle = atomically $ do
                            }
     writeTChan userChan $ printf "%d has joined" $ _userId user
     return user
+
 
 userQuit :: HaschatUser -> IO ()
 userQuit user = do
