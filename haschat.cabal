@@ -13,7 +13,8 @@ maintainer:          percivalgambit@gmail.com
 -- copyright:
 category:            System
 build-type:          Simple
-extra-source-files:  README.md
+extra-source-files:  README.md,
+                     Makefile
 cabal-version:       >=1.10
 
 source-repository head
