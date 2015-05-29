@@ -7,14 +7,18 @@ import Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
                 userQuit, HaschatServer(..), HaschatUser(..),
                 HaschatMessage)
 
+import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
 import Control.Monad (void, replicateM_)
 import Data.IORef (newIORef)
-import Network (withSocketsDo, listenOn, sClose, PortID(..))
+import Network (withSocketsDo, listenOn, sClose, connectTo, PortID(..))
 import System.Environment (setEnv, unsetEnv)
-import System.IO (openTempFile)
+import System.IO (openTempFile, hClose, Handle)
 import Text.Printf (printf)
+
+haschatPort :: Int
+haschatPort = 22311
 
 setupMockServer :: Int -> IO HaschatServer
 setupMockServer initialUserId = do
@@ -47,6 +51,17 @@ withDefaultTestHarness initialUserId f =
         withMockUsers server 2 $ \[u1, u2] -> do
             f u1 u2
 
+withHaschatServer :: IO () -> IO ()
+withHaschatServer action =
+    bracket (setEnv "CHAT_SERVER_PORT" (show haschatPort) >> forkIO haschat)
+            killThread
+            (const action)
+
+withClientConnection :: (Handle -> IO a) -> IO a
+withClientConnection =
+    bracket (connectTo "localhost" $ PortNumber (fromIntegral haschatPort))
+            hClose
+
 receiveNextValidMessage :: HaschatUser -> IO HaschatMessage
 receiveNextValidMessage user = do
     message <- receiveMessage user
@@ -58,7 +73,8 @@ discardNMessages :: Int -> HaschatUser -> IO ()
 discardNMessages n = replicateM_ n . receiveMessage
 
 main :: IO ()
-main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
+main = withSocketsDo $ hspec $ do
+    describe "Unit tests" $ do
 
         describe "the chat server port" $ do
             it "should equal CHAT_SERVER_PORT if it is set" $ property $
@@ -142,3 +158,10 @@ main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
 
                         u1Message `shouldBe` u2SentMsg
                         u2Message `shouldBe` u1SentMsg
+
+    describe "Integration tests" $ do
+
+        describe "the entire server" $ around_ withHaschatServer $ do
+            it "should be able to accept multiple incoming connections" $
+                withClientConnection $ \_ ->
+                    withClientConnection $ \_ -> return ()
