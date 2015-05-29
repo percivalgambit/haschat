@@ -3,17 +3,17 @@ module Main (main) where
 import Test.Hspec
 import Test.QuickCheck
 
-import Haschat (haschat, chatServerPort, newUser, serverLoop,
-                chatter, listen, HaschatServer(..), HaschatUser(..),
+import Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
+                userQuit, HaschatServer(..), HaschatUser(..),
                 HaschatMessage)
 
-import Control.Concurrent.Chan (newChan, readChan)
+import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
 import Control.Monad (void)
 import Data.IORef (newIORef)
 import Network (withSocketsDo, listenOn, sClose, PortID(..))
 import System.Environment (setEnv, unsetEnv)
-import System.IO (Handle, openTempFile, hClose)
+import System.IO (openTempFile, hClose)
 import Text.Printf (printf)
 
 setupMockServer :: Int -> IO HaschatServer
@@ -33,14 +33,11 @@ withMockServer :: Int -> (HaschatServer -> IO a) -> IO a
 withMockServer initialUserId = bracket (setupMockServer initialUserId)
                                        teardownMockServer
 
-newMockHandle :: IO Handle
-newMockHandle = snd <$> openTempFile "/tmp" "haschatTest"
-
 withMockUsers :: HaschatServer -> Int -> ([HaschatUser] -> IO a) -> IO a
 withMockUsers server numUsers =
     bracket (sequence $ replicate numUsers (newMockHandle >>= newUser server))
-            (\users -> sequence $ hClose . _userHandle <$> users)
-
+            (\users -> sequence $ hClose . _userHandle <$> users) where
+        newMockHandle = snd <$> openTempFile "/tmp" "haschatTest"
 
 main :: IO ()
 main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
@@ -77,9 +74,9 @@ main = withSocketsDo $ hspec $ describe "Testing haschat" $ do
                             joinMessage2 =
                                 printf "%d has joined" $ succ initialUserId
 
-                        u1Message1 <- readChan $ _userMessageChan u1
-                        u1Message2 <- readChan $ _userMessageChan u1
-                        u2Message1 <- readChan $ _userMessageChan u2
+                        Just u1Message1 <- receiveMessage u1
+                        Just u1Message2 <- receiveMessage u1
+                        Just u2Message1 <- receiveMessage u2
 
                         u1Message1 `shouldBe` joinMessage1
                         u1Message2 `shouldBe` joinMessage2

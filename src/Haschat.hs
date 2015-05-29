@@ -1,5 +1,5 @@
-module Haschat (haschat, chatServerPort, newUser, serverLoop,
-                chatter, listen, HaschatServer(..), HaschatUser(..),
+module Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
+                userQuit, HaschatServer(..), HaschatUser(..),
                 HaschatMessage) where
 
 import Control.Concurrent (forkIO, forkFinally)
@@ -83,14 +83,26 @@ chatter user = do
     userHasQuit <- hIsEOF $ _userHandle user
     unless userHasQuit $ do
         messageStr <- hGetLine $ _userHandle user
-        writeChan (_userMessageChan user) $ printf "%d: %s" (_userId user) messageStr
+        sendMessage user messageStr
         chatter user
 
 listen :: HaschatUser -> IO ()
 listen user = forever $ do
+    message <- receiveMessage user
+    case message of
+        Just msg -> hPutStrLn (_userHandle user) msg
+        Nothing  -> return ()
+
+sendMessage :: HaschatUser -> HaschatMessage -> IO ()
+sendMessage user message =
+    writeChan (_userMessageChan user) $ printf "%d: %s" (_userId user) message
+
+receiveMessage :: HaschatUser -> IO (Maybe HaschatMessage)
+receiveMessage user = do
     message <- readChan $ _userMessageChan user
     let senderStr = takeWhile (/= ':') message
-    unless (senderStr == show (_userId user)) $ hPutStrLn (_userHandle user) message
+    if senderStr /= show (_userId user) then return $ Just message
+                                        else return Nothing
 
 newUser :: HaschatServer -> Handle -> IO HaschatUser
 newUser server userHandle = do
