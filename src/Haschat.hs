@@ -39,10 +39,13 @@ instance Show LogLevel where
     show Warning = "WARNING"
     show Error   = "ERROR"
 
+-- Log a string to stderr along with a level prefix that shows how serious the
+-- logged information is
 logStr :: LogLevel -> String -> IO ()
 logStr level = hPrintf stderr "%s: %s\n" (show level)
 
--- | Chat server entry point.
+-- Chat server entry point.  Runs the chat server forever if there is no error
+-- with the setup.
 haschat :: IO ()
 haschat = withSocketsDo $ do
     serverPort <- chatServerPort
@@ -58,6 +61,10 @@ haschat = withSocketsDo $ do
     void $ forkIO (listen loggerUser)
     serverLoop server
 
+-- Return the value stored in the environment variable CHAT_SERVER_PORT to be
+-- used as the port number for the chat server.  If there is no value stored in
+-- CHAT_SERVER_PORT or if the value cannot be parsed, then the program will exit
+-- gracefully with an error message.
 chatServerPort :: IO Int
 chatServerPort = handle handler $ do
     Just port <- readMaybe <$> getEnv "CHAT_SERVER_PORT"
@@ -67,6 +74,9 @@ chatServerPort = handle handler $ do
             | isUserError e = error "cannot parse CHAT_SERVER_PORT into an integer."
             | otherwise = error "unknown error when getting CHAT_SERVER_PORT."
 
+-- Connection accepting loop of the server.  Will run forever, continuously
+-- accepting connections, creating new user objects with the handles from the
+-- connections, then forking a talking and listening thread for the user.
 serverLoop :: HaschatServer -> IO ()
 serverLoop server = forever $ do
     (clientHandle, hostname, clientPort) <- accept $ _serverSocket server
@@ -78,6 +88,8 @@ serverLoop server = forever $ do
     void $ forkFinally (userLoop user) (\_ -> userQuit user) where
         userLoop u = race_ (chatter u) (listen u)
 
+-- Talking loop for each user.  Will check if the user has disconnected, and if
+-- not, gets a line of input from the user and broadcasts it to all other users.
 chatter :: HaschatUser -> IO ()
 chatter user = do
     userHasQuit <- hIsEOF $ _userHandle user
@@ -86,6 +98,8 @@ chatter user = do
         sendMessage user messageStr
         chatter user
 
+-- Listening loop for each user.  Will run forever unless killed.  Receives
+-- messages from every user and displays them to the user bound to the thread.
 listen :: HaschatUser -> IO ()
 listen user = forever $ do
     message <- receiveMessage user
