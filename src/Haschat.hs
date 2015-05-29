@@ -1,3 +1,6 @@
+-- Author: Lee Ehudin
+-- Functions to run a simple chat server.
+
 module Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
                 userQuit, HaschatServer(..), HaschatUser(..),
                 HaschatMessage) where
@@ -6,13 +9,13 @@ import Control.Concurrent (forkIO, forkFinally)
 import Control.Concurrent.Async (race_)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan, dupChan)
 import Control.Exception (handle)
-import Control.Monad (forever, unless, void)
-import Data.Functor ((<$>))
+import Control.Monad (forever, when, unless, void)
+import Data.Functor ((<$>)) -- needed for base <4.8
 import Data.IORef (IORef, newIORef, readIORef, modifyIORef)
-import Network (listenOn, withSocketsDo, accept, PortID(..), Socket)
+import Network (PortID(..), Socket, withSocketsDo, listenOn, accept)
 import System.Environment (getEnv)
-import System.IO (stderr, hSetBuffering, hIsEOF, hGetLine, hPutStrLn, hClose,
-                  BufferMode(..), Handle)
+import System.IO (BufferMode(..), Handle, stderr, hSetBuffering, hIsEOF, hGetLine,
+                  hPutStrLn, hClose)
 import System.IO.Error (isDoesNotExistError, isUserError)
 import Text.Printf (printf, hPrintf)
 import Text.Read (readMaybe)
@@ -121,6 +124,8 @@ sendMessage user message =
 receiveMessage :: HaschatUser -> IO (Maybe HaschatMessage)
 receiveMessage user = do
     message <- readChan $ _userMessageChan user
+    -- check which user sent the message by reading the username portion of the
+    -- message if it exists
     let senderStr = takeWhile (/= ':') message
     if senderStr /= show (_userId user) then return $ Just message
                                         else return Nothing
@@ -134,7 +139,7 @@ newUser server userHandle = do
     userChan <- dupChan $ _serverMessageChan server
     userId <- readIORef $ _serverNextUserId server
     modifyIORef (_serverNextUserId server) succ
-    writeChan userChan $ printf "%d has joined" $ userId
+    when (userId > 0) $ writeChan userChan $ printf "%d has joined" $ userId
     return $ HaschatUser { _userId          = userId
                          , _userHandle      = userHandle
                          , _userMessageChan = userChan

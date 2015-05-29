@@ -5,6 +5,7 @@ name:                haschat
 version:             0.1.0.0
 synopsis:            A simple chat server
 -- description:
+homepage:            https://github.com/percivalgambit/haschat
 -- license:
 -- license-file:        LICENSE
 author:              Lee Ehudin

@@ -1,3 +1,5 @@
+-- Author: Lee Ehudin
+
 module Main (main) where
 
 import Test.Hspec
@@ -10,19 +12,22 @@ import Haschat (haschat, chatServerPort, sendMessage, receiveMessage, newUser,
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.Chan (newChan)
 import Control.Exception (bracket)
-import Control.Monad (void, replicateM_, replicateM)
+import Control.Monad (void, replicateM, replicateM_)
 import Data.Char (isAscii)
 import Data.Functor ((<$>)) -- needed for base <4.8
 import Data.IORef (newIORef)
-import Network (withSocketsDo, listenOn, sClose, connectTo, PortID(..))
+import Network (PortID(..), withSocketsDo, listenOn, connectTo, sClose)
 import System.Environment (setEnv, unsetEnv)
-import System.IO (openTempFile, hGetLine, hPutStrLn, hClose, Handle)
+import System.IO (Handle, openTempFile, hGetLine, hPutStrLn, hClose)
 import System.Random (newStdGen, randoms, split)
 import Text.Printf (printf)
 
+-- Port that the server will run on for the integration tests.
 haschatPort :: Int
 haschatPort = 22311
 
+-- set up a mock server object running on a random port with an initial user id
+-- determined by the test.
 setupMockServer :: Int -> IO HaschatServer
 setupMockServer initialUserId = do
     socket <- listenOn $ PortNumber 0
@@ -33,19 +38,26 @@ setupMockServer initialUserId = do
                            , _serverMessageChan = chan
                            }
 
+-- Clean up the mock server object before it disappears.
 teardownMockServer :: HaschatServer -> IO ()
 teardownMockServer = sClose . _serverSocket
 
+-- Runs a function with a mock server as an argument and makes sure that the
+-- server is set up and torn down successfully.
 withMockServer :: Int -> (HaschatServer -> IO a) -> IO a
 withMockServer initialUserId = bracket (setupMockServer initialUserId)
                                        teardownMockServer
 
+-- Generates a specified number of mock users bound to a server and passes them
+-- to a specified function.  Each mock user will have a temporary file as their
+-- handle instead of a connection to the socket.
 withMockUsers :: HaschatServer -> Int -> ([HaschatUser] -> IO a) -> IO a
 withMockUsers server numUsers = bracket setupUsers teardownUsers where
     setupUsers = replicateM numUsers (newMockHandle >>= newUser server)
     teardownUsers users = mapM_ userQuit users
     newMockHandle = snd <$> openTempFile "/tmp" "haschatTest"
 
+-- Sets up a test harness with 2 users bound to the same server.
 withDefaultTestHarness :: Int
                        -> (HaschatUser -> HaschatUser -> IO a)
                        -> IO a
@@ -54,18 +66,24 @@ withDefaultTestHarness initialUserId f =
         withMockUsers server 2 $ \[u1, u2] -> do
             f u1 u2
 
+-- Sets up the entire chat server running in a separate thread for the integration
+-- tests.
 withHaschatServer :: IO () -> IO ()
 withHaschatServer action =
     bracket (setEnv "CHAT_SERVER_PORT" (show haschatPort) >> forkIO haschat)
             killThread
             (const action)
 
+-- Generates a specified number of client connections in the form of a list of
+-- handles and passes them to a specified function.
 withClientConnections :: Int -> ([Handle] -> IO a) -> IO a
 withClientConnections numConnections =
     bracket (replicateM numConnections (threadDelay 100 >> newConnection))
             (mapM_ hClose) where
         newConnection = connectTo "localhost" $ PortNumber (fromIntegral haschatPort)
 
+-- Keep reading messages from the network until one is received that is not from
+-- the specified user, then return that message
 receiveNextValidMessage :: HaschatUser -> IO HaschatMessage
 receiveNextValidMessage user = do
     message <- receiveMessage user
@@ -73,9 +91,11 @@ receiveNextValidMessage user = do
         Just msg -> return msg
         Nothing  -> receiveNextValidMessage user
 
+-- Consume the next n messages from the network for the specified user.
 discardNMessages :: Int -> HaschatUser -> IO ()
 discardNMessages n = replicateM_ n . receiveMessage
 
+-- Run tests on haschat.
 main :: IO ()
 main = withSocketsDo $ hspec $ do
     describe "Unit tests" $ do
@@ -195,7 +215,7 @@ main = withSocketsDo $ hspec $ do
                     client2Join1 `shouldBe` printf joinMessageFmt (2 :: Int)
                     client2Join2 `shouldBe` printf joinMessageFmt (2 :: Int)
 
-                    -- test 2 user conversation
+                    -- test message send and receive
                     (gen, gen') <- split <$> newStdGen
                     let randMsg1 = filter isAscii $ take 100 $ randoms gen
                         randMsg2 = filter isAscii $ take 100 $ randoms gen'

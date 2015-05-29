@@ -1,3 +1,5 @@
+-- Author: Lee Ehudin
+
 module Main (main) where
 
 import Haschat
